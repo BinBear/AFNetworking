@@ -21,6 +21,7 @@
 
 #import "AFURLSessionManager.h"
 #import <objc/runtime.h>
+#import <os/lock.h>
 
 static dispatch_queue_t url_session_manager_processing_queue() {
     static dispatch_queue_t af_url_session_manager_processing_queue;
@@ -101,6 +102,7 @@ typedef void (^AFURLSessionTaskCompletionHandler)(NSURLResponse *response, id re
 @property (nonatomic, copy) AFURLSessionTaskProgressBlock uploadProgressBlock;
 @property (nonatomic, copy) AFURLSessionTaskProgressBlock downloadProgressBlock;
 @property (nonatomic, copy) AFURLSessionTaskCompletionHandler completionHandler;
+@property (nonatomic, assign) os_unfair_lock  taskLock;
 @end
 
 @implementation AFURLSessionManagerTaskDelegate
@@ -114,6 +116,7 @@ typedef void (^AFURLSessionTaskCompletionHandler)(NSURLResponse *response, id re
     _mutableData = [NSMutableData data];
     _uploadProgress = [[NSProgress alloc] initWithParent:nil userInfo:nil];
     _downloadProgress = [[NSProgress alloc] initWithParent:nil userInfo:nil];
+    _taskLock = OS_UNFAIR_LOCK_INIT;
     
     __weak __typeof__(task) weakTask = task;
     for (NSProgress *progress in @[ _uploadProgress, _downloadProgress ])
@@ -187,7 +190,9 @@ didCompleteWithError:(NSError *)error
     if (self.mutableData) {
         data = [self.mutableData copy];
         //We no longer need the reference, so nil it out to gain back some memory.
+        os_unfair_lock_lock(&_taskLock);
         self.mutableData = nil;
+        os_unfair_lock_unlock(&_taskLock);
     }
 
 #if AF_CAN_USE_AT_AVAILABLE && AF_CAN_INCLUDE_SESSION_TASK_METRICS
@@ -263,7 +268,9 @@ didFinishCollectingMetrics:(NSURLSessionTaskMetrics *)metrics AF_API_AVAILABLE(i
     self.downloadProgress.totalUnitCount = dataTask.countOfBytesExpectedToReceive;
     self.downloadProgress.completedUnitCount = dataTask.countOfBytesReceived;
 
+    os_unfair_lock_lock(&_taskLock);
     [self.mutableData appendData:data];
+    os_unfair_lock_unlock(&_taskLock);
 }
 
 - (void)URLSession:(NSURLSession *)session task:(NSURLSessionTask *)task
